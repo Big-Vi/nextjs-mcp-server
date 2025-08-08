@@ -1,15 +1,41 @@
 import { NextRequest, NextResponse } from "next/server";
 
+// Define types for MCP protocol
+interface ToolContent {
+  type: string;
+  text?: string;
+  data?: unknown;
+}
+
+interface ToolResult {
+  content: ToolContent[];
+}
+
+interface InputSchemaProperty {
+  type: string;
+  enum?: string[];
+  minLength?: number;
+  maxLength?: number;
+  description?: string;
+}
+
+interface InputSchema {
+  type: string;
+  properties: Record<string, InputSchemaProperty>;
+  required?: string[];
+}
+
+interface ToolArgs {
+  format?: string;
+  [key: string]: unknown;
+}
+
 // Define our tools
 interface Tool {
   name: string;
   description: string;
-  inputSchema: {
-    type: string;
-    properties: Record<string, any>;
-    required?: string[];
-  };
-  handler: (args: any) => Promise<any>;
+  inputSchema: InputSchema;
+  handler: (args: ToolArgs) => Promise<ToolResult>;
 }
 
 // Session management
@@ -51,36 +77,77 @@ const tools = new Map<string, Tool>();
 // Register devops_capabilities tool
 tools.set("devops_capabilities", {
   name: "devops_capabilities",
-  description: "Get DevOps Capabilities",
+  description: "Get DevOps Capabilities - lists available DevOps operations like debugging, deployment, monitoring, etc.",
   inputSchema: {
     type: "object",
     properties: {
-      state: {
+      format: {
         type: "string",
-        minLength: 2,
-        maxLength: 2,
-        description: "Two-letter state code (e.g. CA, NY)"
+        enum: ["list", "detailed", "json"],
+        description: "Output format for capabilities (optional, defaults to 'list')"
       }
     },
-    required: ["state"]
+    required: [] // No required inputs - this tool can be called without parameters
   },
-  handler: async ({ state }: { state: string }) => {
-    const stateCode = state.toUpperCase();
-    const alertsText = `Active alerts for ${stateCode}:\n\nSample DevOps data for ${stateCode}`;
+  handler: async ({ format = "list" }: { format?: string }) => {
+    const capabilities = [
+      "debugging",
+      "deployment", 
+      "monitoring",
+      "logging",
+      "scaling",
+      "backup",
+      "security-scanning",
+      "performance-testing",
+      "infrastructure-provisioning",
+      "ci-cd-pipeline"
+    ];
+
+    let responseText;
+    
+    if (format === "detailed") {
+      responseText = `DevOps Capabilities (Detailed):\n\n` +
+        capabilities.map(cap => `• ${cap}: Available for execution`).join('\n');
+    } else if (format === "json") {
+      responseText = JSON.stringify({ capabilities, count: capabilities.length }, null, 2);
+    } else {
+      responseText = `Available DevOps Capabilities:\n\n${capabilities.join(", ")}`;
+    }
 
     return {
       content: [
         {
           type: "text",
-          text: alertsText,
+          text: responseText,
         },
       ],
     };
   },
 });
 
+// JSON-RPC request types
+interface JsonRpcRequest {
+  jsonrpc: string;
+  id: number | string;
+  method: string;
+  params?: {
+    name?: string;
+    arguments?: ToolArgs;
+  };
+}
+
+interface JsonRpcResponse {
+  jsonrpc: string;
+  id: number | string;
+  result?: unknown;
+  error?: {
+    code: number;
+    message: string;
+  };
+}
+
 // Simple JSON-RPC handler
-async function handleMCPRequest(requestBody: any, sessionId?: string) {
+async function handleMCPRequest(requestBody: JsonRpcRequest, sessionId?: string): Promise<JsonRpcResponse> {
   // Auto-initialize session if not provided or not found
   if (!sessionId || !sessions.has(sessionId)) {
     sessionId = generateSessionId();
@@ -137,7 +204,12 @@ async function handleMCPRequest(requestBody: any, sessionId?: string) {
           session.initialized = true;
         }
         
-        const { name: toolName, arguments: toolArgs } = requestBody.params;
+        const toolName = requestBody.params?.name;
+        const toolArgs = requestBody.params?.arguments || {};
+        
+        if (!toolName) {
+          throw new Error('Tool name is required');
+        }
         
         const tool = tools.get(toolName);
         if (!tool) {
